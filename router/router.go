@@ -1,27 +1,25 @@
 package router
 
 import (
-	"fmt"
 	"os"
 
-	"../../tools-go/build"
-	"../../tools-go/config"
-	cliconfig "../../tools-go/config/cli"
-	"../../tools-go/env"
-	"../../tools-go/filesystem"
-	"../../tools-go/installer"
-	"../../tools-go/logging"
-	"../../tools-go/metrics"
-	"../../tools-go/objects"
-	"../../tools-go/objects/strings"
-	"../../tools-go/projects"
-	"../../tools-go/terminal"
-	"../../tools-go/timing"
-	"../../tools-go/updater"
-	"../../tools-go/users"
-	"../../tools-go/vars"
-	"../cli"
-	"./packages"
+	"github.com/neurafuse/neuracli/cli"
+	"github.com/neurafuse/neuracli/router/packages"
+	"github.com/neurafuse/tools-go/build"
+	"github.com/neurafuse/tools-go/config"
+	cliconfig "github.com/neurafuse/tools-go/config/cli"
+	"github.com/neurafuse/tools-go/env"
+	"github.com/neurafuse/tools-go/installer"
+	"github.com/neurafuse/tools-go/logging"
+	"github.com/neurafuse/tools-go/metrics"
+	"github.com/neurafuse/tools-go/objects"
+	"github.com/neurafuse/tools-go/objects/strings"
+	"github.com/neurafuse/tools-go/projects"
+	"github.com/neurafuse/tools-go/terminal"
+	"github.com/neurafuse/tools-go/timing"
+	"github.com/neurafuse/tools-go/updater"
+	usersID "github.com/neurafuse/tools-go/users/id"
+	"github.com/neurafuse/tools-go/vars"
 )
 
 type F struct{}
@@ -46,13 +44,11 @@ func (f F) startup() {
 		}
 	}
 	terminal.Init(skip)
-	f.checkUser(false)
+	f.checkUser()
 	installer.F.CheckLocalSetup(installer.F{})
-	f.checkUser(true)
 	if !skip {
 		f.greetUser()
-		f.checkDevconfig()
-		build.F.CheckUpdates(build.F{}, env.F.GetActive(env.F{}, false), true)
+		f.checkDevMode()
 		updater.F.Check(updater.F{})
 	}
 	projects.F.CheckConfigs(projects.F{})
@@ -60,10 +56,10 @@ func (f F) startup() {
 }
 
 func (f F) routerAssistant() {
-	cliArgs := os.Args
-	sel := terminal.GetUserSelection("What do you want to do?", []string{cli.AssistantDescription, cli.ResourceManagerDesc, cli.ShellDescription, cli.SettingsDescription, cli.ExitDescription}, false, false)
+	var cliArgs []string = os.Args
+	var sel string = terminal.GetUserSelection("What is your intention?", f.getMainMenuOpts(), false, false)
 	if sel == cli.ShellDescription {
-		f.routeShellAutocomplete()
+		cli.F.RouteShell(cli.F{})
 	} else if sel == cli.AssistantDescription {
 		f.route(cli.F.GetPackageName(cli.F{}, cliArgs), cliArgs, true)
 	} else if sel == cli.ResourceManagerDesc {
@@ -76,23 +72,16 @@ func (f F) routerAssistant() {
 	f.routerAssistant()
 }
 
-func (f F) resourceManager(cliArgs []string) {
-	sel := terminal.GetUserSelection("What do you want to do?", []string{cli.UsersDescription, cli.InfraDescription, cli.ProjectsDescription}, false, false)
-	switch sel {
-	//case cli.UsersDescription:
-	//case cli.InfraDescription:
-	case cli.ProjectsDescription:
-		projects.F.Router(projects.F{}, cliArgs, true)
-	}
+func (f F) getMainMenuOpts() []string {
+	var opts []string
+	opts = []string{cli.AssistantDescription, cli.ShellDescription, cli.ResourceManagerDesc, cli.SettingsDescription, cli.ExitDescription}
+	return opts
 }
 
-func (f F) routeShellAutocomplete() {
-	cliArgs := cli.F.Autocomplete(cli.F{})
-	fmt.Println(cliArgs)
-	if cliArgs[0] == "exit" {
-		terminal.Exit(0, "")
-	}
-	f.route(cliArgs[0], cliArgs, false)
+func (f F) resourceManager(cliArgs []string) {
+	var selOpts []string = config.GetResourceTypes()
+	var sel string = terminal.GetUserSelection("Which resource do you want to manage?", selOpts, false, false)
+	objects.CallStructInterfaceFuncByName(packages.ResourceTypes{}, sel, "Router", cliArgs, true)
 }
 
 func (f F) routeHelp() {
@@ -102,51 +91,40 @@ func (f F) routeHelp() {
 }
 
 func (f F) route(packageName string, cliArgs []string, routeAssistant bool) {
-	fmt.Println(packageName)
-	switch packageName {
-	case "infra":
-		packageName = "infrastructure"
-	case "dev":
-		packageName = "develop"
-	case "cluster":
-		packageName = "kubernetes"
-	}
 	objects.CallStructInterfaceFuncByName(packages.Packages{}, strings.Title(packageName), "Router", cliArgs, routeAssistant)
 }
 
-func (f F) checkUser(create bool) {
-	var userName string
+func (f F) checkUser() {
 	if !config.ValidSettings("cli", "users", false) {
-		if create {
-			logging.Log([]string{"", vars.EmojiUser, vars.EmojiInfo}, "In order to use "+vars.NeuraCLIName+" you have to configure a user account.", 0)
-			userName = terminal.GetUserSelection("Choose an existing user or create a new one", users.GetAllIDs(), true, false)
-			config.Setting("set", "cli", "Spec.Users.DefaultID", userName)
-			config.Setting("reset", "cli", "Spec.Projects.DefaultID", "")
-		}
+		logging.Log([]string{"", vars.EmojiUser, vars.EmojiInfo}, "In order to use "+vars.NeuraCLIName+" you have to configure a user account.", 0)
+		usersID.F.CreateNew(usersID.F{})
+		config.Setting("set", "cli", "Spec.Users.DefaultID", usersID.F.GetActive(usersID.F{}))
 	} else {
+		var userName string
 		userName = config.Setting("get", "cli", "Spec.Users.DefaultID", "")
-	}
-	users.SetIDActive(userName) // TODO: Refactor
-	activeUserPath := users.BasePath + "/" + userName
-	vars.ProjectsBasePath = activeUserPath + "/"
-	if create {
-		filesystem.CreateDir(activeUserPath, false)
+		usersID.F.SetActive(usersID.F{}, userName)
 	}
 }
 
 func (f F) greetUser() {
 	if env.F.CLI(env.F{}) {
-		logging.Log([]string{"", vars.EmojiUser, vars.EmojiWavingHand}, "Welcome to "+vars.NeuraKubeName+", "+users.GetIDActive()+".", 0)
+		logging.Log([]string{"", vars.EmojiAssistant, vars.EmojiWavingHand}, "Logged in "+usersID.F.GetActive(usersID.F{})+".", 0)
 		logging.Log([]string{"", vars.EmojiAssistant, vars.EmojiThumbsUp}, "Wishing you a good "+timing.GetDayTime()+" hustle.\n", 0)
 	}
 }
 
-func (f F) checkDevconfig() {
-	var status string = config.Setting("get", "dev", "Spec.Status", "")
-	if status == "active" {
-		logging.Log([]string{"", vars.EmojiDev, vars.EmojiSuccess}, "Developer mode "+status+".", 0)
-		if env.F.ActiveFramework(env.F{}, vars.NeuraCLINameRepo) {
+func (f F) checkDevMode() {
+	if config.DevConfigActive() {
+		logging.Log([]string{"", vars.EmojiDev, vars.EmojiSettings}, "Developer mode is active.", 0)
+		if env.F.IsFrameworkActive(env.F{}, vars.NeuraCLINameID) {
 			metrics.DevStats(vars.OrganizationNameRepo)
+		}
+		var ciMode string = config.Setting("get", "dev", "Spec.CI.Mode", "")
+		if ciMode == "auto" {
+			logging.Log([]string{"", vars.EmojiDev, vars.EmojiWarning}, "CI mode is automatic (unstable).\n", 0)
+			build.F.CheckUpdates(build.F{}, env.F.GetActive(env.F{}, false), true)
+		} else {
+			logging.Log([]string{"", vars.EmojiDev, vars.EmojiProcess}, "CI mode is manual.\n", 0)
 		}
 	}
 }

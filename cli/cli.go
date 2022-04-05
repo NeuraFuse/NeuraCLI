@@ -1,26 +1,23 @@
 package cli
 
 import (
-	"../../tools-go/build"
-	buildconfig "../../tools-go/config/build"
-	"../../tools-go/logging"
-	"../../tools-go/objects"
-	"../../tools-go/objects/strings"
-	"../../tools-go/terminal"
-	"../../tools-go/vars"
-	"../router/packages"
 	"github.com/c-bata/go-prompt"
+	"github.com/neurafuse/neuracli/router/packages"
+	"github.com/neurafuse/tools-go/build"
+	buildconfig "github.com/neurafuse/tools-go/config/build"
+	"github.com/neurafuse/tools-go/logging"
+	"github.com/neurafuse/tools-go/objects"
+	"github.com/neurafuse/tools-go/objects/strings"
+	"github.com/neurafuse/tools-go/terminal"
+	"github.com/neurafuse/tools-go/vars"
 	"github.com/spf13/cobra"
 )
 
 type F struct{}
 
-var ShellDescription string = "Start a " + vars.NeuraCLIName + " shell (autocomplete, etc.)."
-var AssistantDescription string = "Start a workflow with the assistant."
-var ResourceManagerDesc string = "Open the resource manager (users, infrastructures, projects)."
-var UsersDescription string = "Configure your user."
-var InfraDescription string = "Configure your infrastructures."
-var ProjectsDescription string = "Configure your projects."
+var ShellDescription string = "Open " + vars.NeuraCLIName + " shell"
+var AssistantDescription string = "Start the assistant"
+var ResourceManagerDesc string = "Resource Manager (Users, projects, infra.)"
 var infraDescription string = "Manage your cluster setup."
 var clusterDescription string = "Manage your existing clusters."
 var gcloudDescription string = "Select the infrastructure provider gcloud."
@@ -29,7 +26,7 @@ var inspectDescription string = "Inspect resources of module."
 var createDescription string = "Starts creation of module."
 var recreateDescription string = "Starts recreation of module."
 var deleteDescription string = "Starts deletion of module."
-var apiDescription string = "Interact with " + vars.NeuraKubeName + " API (in-cluster)."
+var apiDescription string = "Interact with " + vars.NeuraKubeName + " API."
 var devDescription string = "Develop an application within your cluster."
 var appDescription string = "Manage your cluster apps."
 var cloudDescription string = "Interact with the " + vars.OrganizationName + " Cloud."
@@ -37,7 +34,7 @@ var ciDescription string = "Interact with the CI module."
 var ciBuildCheckDisableDesc string = "Disable build check on startup."
 var ciBuildHandoverDesc string = "Handover mode: If a build starts another build."
 var exitDescription string = "Exit shell"
-var SettingsDescription string = "CLI Settings (Updates, ..)"
+var SettingsDescription string = "Go to CLI settings"
 var HelpDescription string = "Open Help"
 var ExitDescription string = "Close " + vars.NeuraCLIName
 
@@ -57,7 +54,17 @@ func (f F) Router() {
 		Long:  ``,
 		Args:  cobra.MinimumNArgs(0),
 		Run: func(cmd *cobra.Command, args []string) {
-			f.routeShell()
+			f.RouteShell()
+		},
+	}
+	var cmdInfraShort = &cobra.Command{
+		Use:   "infra",
+		Short: "Shortcut for infrastructure",
+		Long:  ``,
+		Args:  cobra.MinimumNArgs(0),
+		Run: func(cmd *cobra.Command, args []string) {
+			args = append([]string{"infrastructure"}, args...)
+			f.route("infrastructure", args, false)
 		},
 	}
 	var cmdInfra = &cobra.Command{
@@ -76,10 +83,10 @@ func (f F) Router() {
 		Long:  ``,
 		Args:  cobra.MinimumNArgs(0),
 		Run: func(cmd *cobra.Command, args []string) {
-			args = append([]string{"kubernetes"}, args...)
-			f.route("kubernetes", args, false)
+			args = append([]string{"cluster"}, args...)
+			f.route("cluster", args, false)
 		},
-	} 
+	}
 	var cmdAPI = &cobra.Command{
 		Use:   "api",
 		Short: apiDescription,
@@ -121,7 +128,7 @@ func (f F) Router() {
 			f.route("cloud", args, false)
 		},
 	}
-	//depUpdate := false
+	// TODO: ? var depUpdate bool
 	var cmdCI = &cobra.Command{
 		Use:   "ci",
 		Short: ciDescription,
@@ -132,36 +139,38 @@ func (f F) Router() {
 			f.route("ci", args, false)
 		},
 	}
-	var rootCmd = &cobra.Command{Use: vars.NeuraCLINameRepo}
-	buildCheckDisabled := false
+	var rootCmd = &cobra.Command{Use: vars.NeuraCLINameID}
+	var buildCheckDisabled bool
 	rootCmd.PersistentFlags().BoolVarP(&buildCheckDisabled, build.F.GetFlags(build.F{})["build"][0], "b", false, ciBuildCheckDisableDesc) // TODO: Refactor
-	buildHandover := false
+	var buildHandover bool
 	rootCmd.PersistentFlags().BoolVarP(&buildHandover, build.F.GetFlags(build.F{})["build"][1], "c", false, ciBuildHandoverDesc)
 	//cmdCI.Flags().BoolVar(&depUpdate, "dep-update", false, "Update all build dependencies.")
 	buildconfig.F.Setting(buildconfig.F{}, "set", "check", !buildCheckDisabled)
-	rootCmd.AddCommand(cmdAssistant, cmdShell, cmdInfra, cmdCluster, cmdAPI, cmdDev, cmdApp, cmdCloud, cmdCI)
+	rootCmd.AddCommand(cmdAssistant, cmdShell, cmdInfra, cmdInfraShort, cmdCluster, cmdAPI, cmdDev, cmdApp, cmdCloud, cmdCI)
 	rootCmd.Execute()
 }
 
-func (f F) routeShell() {
-	cliArgs := f.Autocomplete()
-	assistant := false
-	if cliArgs[0] == "exit" {
+func (f F) RouteShell() {
+	var cliArgs []string
+	var assistant bool
+	cliArgs, assistant = f.Autocomplete()
+	f.route(cliArgs[0], cliArgs, assistant)
+}
+
+func (f F) Autocomplete() ([]string, bool) {
+	logging.Log([]string{"\n", vars.EmojiAssistant, vars.EmojiInfo}, "You can activate the assistant at any time if you hit enter.", 0)
+	var cliArgs string = prompt.Input(vars.NeuraCLINameID+" > ", f.AutocompletePrompt)
+	var assistant bool
+	if cliArgs == "exit" {
 		terminal.Exit(0, "")
 	} else if len(cliArgs) == 1 {
 		assistant = true
 	}
-	f.route(cliArgs[0], cliArgs, assistant)
-}
-
-func (f F) Autocomplete() []string {
-	logging.Log([]string{"\n", vars.EmojiAssistant, vars.EmojiInfo}, "You can activate the assistant at any time if you hit enter.", 0)
-	t := prompt.Input(vars.NeuraCLINameRepo+" > ", f.AutocompletePrompt)
-	return strings.Split(t, " ")
+	return strings.Split(cliArgs, " "), assistant
 }
 
 func (f F) AutocompletePrompt(d prompt.Document) []prompt.Suggest {
-	s := []prompt.Suggest{
+	opts := []prompt.Suggest{
 		{Text: "assistant", Description: AssistantDescription},
 		{Text: "infrastructure", Description: infraDescription},
 		{Text: "api", Description: apiDescription},
@@ -169,32 +178,29 @@ func (f F) AutocompletePrompt(d prompt.Document) []prompt.Suggest {
 		{Text: "app", Description: appDescription},
 		{Text: "cluster", Description: clusterDescription},
 
-		{Text: vars.InfraProviderGcloud, Description: gcloudDescription},
-
 		{Text: "get", Description: getDescription},
 		{Text: "inspect", Description: inspectDescription},
 		{Text: "create", Description: createDescription},
 		{Text: "recreate", Description: recreateDescription},
 		{Text: "delete", Description: deleteDescription},
-
 		{Text: "exit", Description: exitDescription},
 	}
-	return prompt.FilterFuzzy(s, d.GetWordBeforeCursor(), true)
+	return prompt.FilterFuzzy(opts, d.GetWordBeforeCursor(), true)
 }
 
 func (f F) route(packageName string, cliArgs []string, routeAssistant bool) {
-	if packageName == "" {
+	if packageName == "" || packageName == "assistant" {
 		routeAssistant = true
 	}
 	if routeAssistant {
-		f.GetPackageName(cliArgs)
+		packageName = f.GetPackageName(cliArgs)
 	}
 	objects.CallStructInterfaceFuncByName(packages.Packages{}, strings.Title(packageName), "Router", cliArgs, routeAssistant)
 }
 
 func (f F) GetPackageName(cliArgs []string) string {
 	var packageName string
-	packageName = terminal.GetUserSelection("What do you want to do?", f.getBasePackagesArray(), false, false)
+	packageName = terminal.GetUserSelection("What is your intention?", f.getBasePackagesArray(), false, false)
 	return packageName
 }
 

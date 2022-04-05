@@ -1,53 +1,30 @@
 package app
 
 import (
-	"../../../tools-go/env"
-	"../../../tools-go/runtime"
-	"../../../tools-go/terminal"
-	"../../../tools-go/vars"
-	"../base"
-	"./inference"
+	"github.com/neurafuse/tools-go/ci"
+	"github.com/neurafuse/tools-go/config"
+	"github.com/neurafuse/tools-go/env"
+	"github.com/neurafuse/tools-go/runtime"
+	"github.com/neurafuse/tools-go/terminal"
+	"github.com/neurafuse/tools-go/vars"
+	"github.com/neurafuse/neuracli/api/app/id"
 )
 
 type F struct{}
 
 var context string = env.F.GetContext(env.F{}, runtime.F.GetCallerInfo(runtime.F{}, true), false)
 
-func (f F) Router(cliArgs []string, routeAssistant bool) {
-	id := f.GetID(cliArgs, routeAssistant)
-	action := f.getAction(cliArgs, routeAssistant, id)
-	if action == "inference" {
-		inference.F.Router(inference.F{}, cliArgs, routeAssistant, id)
+func (f F) GetID(cliArgs []string, routeAssistant bool) (string, []string) {
+	var appID string = ci.F.GetContextID(ci.F{})
+	var appKind string
+	var appKindConfigKey string = "Spec.App.Kind"
+	if config.ValidSettings("project", "app", true) {
+		appKind = config.Setting("get", "project", appKindConfigKey, "")
 	} else {
-		base.F.Router(base.F{}, context, id, action)
+		var opts []string = []string{"A " + vars.NeuraKubeNameID + " managed app", "A custom managed"}
+		appKind = terminal.GetUserSelection("What kind of app do you want to develop?", opts, false, false)
+		config.Setting("set", "project", appKindConfigKey, appKind)
 	}
-}
-
-func (f F) GetID(cliArgs []string, routeAssistant bool) string {
-	var id string
-	if routeAssistant || len(cliArgs) < 2 {
-		sel := terminal.GetUserSelection("Do you want to develop a "+vars.NeuraKubeName+" managed app?", []string{"Yes", "No"}, false, true)
-		if sel == "Yes" {
-			id = terminal.GetUserSelection("Which "+context+" do you want to manage?", f.getIDs(), false, false)
-		}
-	} else {
-		id = cliArgs[1]
-	}
-	return id
-}
-
-func (f F) getIDs() []string { // TODO: Dynamic
-	var ids []string
-	ids = []string{"gpt"}
-	return ids
-}
-
-func (f F) getAction(cliArgs []string, routeAssistant bool, id string) string {
-	var action string
-	if routeAssistant || len(cliArgs) < 2 {
-		action = terminal.GetUserSelection("Which action do you want to start for the app "+id+"?", []string{"create", "recreate", "update", "delete", "inference"}, false, false)
-	} else {
-		action = cliArgs[1]
-	}
-	return action
+	id.F.SetKind(id.F{}, appID, appKind)
+	return appID, cliArgs
 }

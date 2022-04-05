@@ -1,4 +1,8 @@
-users
+.neuracli
+.devspace
+tmp
 releases/builds
 neuracli-darwin-amd64
+neuracli
 **/.DS_Store
+__debug_bin

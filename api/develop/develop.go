@@ -1,11 +1,12 @@
 package develop
 
 import (
-	"../../../tools-go/env"
-	"../../../tools-go/runtime"
-	"../../../tools-go/terminal"
-	"../app"
-	"./remote"
+	"github.com/neurafuse/neuracli/api/app"
+	appIDTool "github.com/neurafuse/neuracli/api/app/id"
+	"github.com/neurafuse/neuracli/api/base"
+	"github.com/neurafuse/tools-go/env"
+	"github.com/neurafuse/tools-go/runtime"
+	"github.com/neurafuse/tools-go/terminal"
 )
 
 type F struct{}
@@ -13,19 +14,24 @@ type F struct{}
 var context string = env.F.GetContext(env.F{}, runtime.F.GetCallerInfo(runtime.F{}, true), false)
 
 func (f F) Router(cliArgs []string, routeAssistant bool) {
-	appID := app.F.GetID(app.F{}, cliArgs, routeAssistant)
-	module := f.getModule(cliArgs, routeAssistant)
-	if module == "remote" || module == "re" {
-		remote.F.Router(remote.F{}, cliArgs, routeAssistant, appID)
-	}
+	var appID string
+	appID, cliArgs = app.F.GetID(app.F{}, cliArgs, routeAssistant)
+	base.F.Router(base.F{}, context, appID, f.getAction(cliArgs, routeAssistant, appID))
 }
 
-func (f F) getModule(cliArgs []string, routeAssistant bool) string {
-	var module string
+func (f F) getAction(cliArgs []string, routeAssistant bool, appID string) string {
+	var action string
 	if routeAssistant || len(cliArgs) < 2 {
-		module = terminal.GetUserSelection("Which "+context+" workflow do you want to start?", []string{"remote"}, false, false)
+		var opts []string
+		if appIDTool.F.IsKindManaged(appIDTool.F{}, appID) {
+			opts = []string{"create", "sync", "recreate", "update", "delete"}
+		} else if appIDTool.F.IsKindCustom(appIDTool.F{}, appID) {
+			opts = []string{"sync"}
+		}
+		var appKind string = appIDTool.F.GetKind(appIDTool.F{}, appID)
+		action = terminal.GetUserSelection("Which "+context+" action do you intend to start for the "+appKind+" app "+appID+"?", opts, false, false)
 	} else {
-		module = cliArgs[1]
+		action = cliArgs[1]
 	}
-	return module
+	return action
 }

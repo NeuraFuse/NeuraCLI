@@ -1,8 +1,8 @@
 package cloud
 
 import (
-	"../../tools-go/logging"
-	"../../tools-go/vars"
+	"github.com/neurafuse/tools-go/logging"
+	"github.com/neurafuse/tools-go/vars"
 )
 
 type F struct{}

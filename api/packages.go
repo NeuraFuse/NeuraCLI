@@ -1,9 +1,9 @@
 package api
 
 import (
-	"../../neurakube/infrastructure/ci/api"
+	"github.com/neurafuse/tools-go/ci/api"
 )
 
 type Packages struct {
-	Ciapi   api.F
+	Ciapi api.F
 }

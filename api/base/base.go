@@ -1,105 +1,182 @@
 package base
 
 import (
-	"../../../neurakube/infrastructure/ci"
-	baseCI "../../../neurakube/infrastructure/ci/base"
-	"../../../tools-go/api/client"
-	"../../../tools-go/apps/ide/vscode"
-	"../../../tools-go/apps/kubernetes/devspace"
-	"../../../tools-go/apps/tensorflow/tensorboard"
-	"../../../tools-go/config"
-	infraconfig "../../../tools-go/config/infrastructure"
-	"../../../tools-go/container"
-	"../../../tools-go/env"
-	"../../../tools-go/errors"
-	"../../../tools-go/kubernetes/deployments"
-	"../../../tools-go/kubernetes/namespaces"
-	"../../../tools-go/kubernetes/pods"
-	"../../../tools-go/logging"
-	"../../../tools-go/objects/strings"
-	"../../../tools-go/runtime"
-	"../../../tools-go/terminal"
-	"../../../tools-go/vars"
-	"../../../tools-go/users"
+	infra "github.com/neurafuse/neurakube/infrastructure"
+	"github.com/neurafuse/tools-go/api/client"
+	"github.com/neurafuse/tools-go/apps/ide/vscode"
+	"github.com/neurafuse/tools-go/apps/kubernetes/devspace"
+	"github.com/neurafuse/tools-go/apps/tensorflow/tensorboard"
+	"github.com/neurafuse/tools-go/ci"
+	baseCI "github.com/neurafuse/tools-go/ci/base"
+	"github.com/neurafuse/tools-go/config"
+	infraConfig "github.com/neurafuse/tools-go/config/infrastructure"
+	projectConfig "github.com/neurafuse/tools-go/config/project"
+	devConfig "github.com/neurafuse/tools-go/config/dev"
+	"github.com/neurafuse/tools-go/container"
+	"github.com/neurafuse/tools-go/env"
+	"github.com/neurafuse/tools-go/apps/python/debugpy"
+	"github.com/neurafuse/tools-go/errors"
+	"github.com/neurafuse/tools-go/filesystem"
+	kubeTools "github.com/neurafuse/tools-go/kubernetes/tools"
+
+	appIDTools "github.com/neurafuse/neuracli/api/app/id"
+	"github.com/neurafuse/tools-go/kubernetes/pods"
+	"github.com/neurafuse/tools-go/kubernetes/portforward"
+	"github.com/neurafuse/tools-go/kubernetes/services"
+	"github.com/neurafuse/tools-go/logging"
+	"github.com/neurafuse/tools-go/objects/strings"
+	"github.com/neurafuse/tools-go/runtime"
+	"github.com/neurafuse/tools-go/terminal"
+	usersID "github.com/neurafuse/tools-go/users/id"
+	"github.com/neurafuse/tools-go/vars"
 )
 
 type F struct{}
 
 func (f F) Router(context, appID, action string) { // TODO: Implement id
-	if appID == "" {
-		f.Prepare(context, action)
-	}
-	if action == "create" || action == "cr" || action == "update" || action == "up" {
-		f.Create(context, appID, baseCI.F.GetResType(baseCI.F{}, context))
-	} else if action == "recreate" || action == "re" {
-		f.Recreate(context, appID)
-	} else if action == "delete" || action == "del" {
+	infra.F.CheckDeploymentStatus(infra.F{})
+	if action == "create" || action == "update" || action == "sync" {
+		f.Create(context, action, appID, baseCI.F.GetResType(baseCI.F{}, context))
+	} else if action == "recreate" {
+		f.Recreate(context, action, appID)
+	} else if action == "delete" {
 		f.Delete(context, baseCI.F.GetResType(baseCI.F{}, context))
+	} else {
+		errors.Check(nil, runtime.F.GetCallerInfo(runtime.F{}, false), "Unable to find action: "+action, true, true, true)
 	}
 }
 
-func (f F) Prepare(context, action string) {
-	logging.Log([]string{"", vars.EmojiRemote, vars.EmojiProcess}, "Preparing "+baseCI.F.GetResType(baseCI.F{}, context)+"..", 0)
-	f.checkUserConfigs(context)
-	client.F.Sync(client.F{}) // Update neurakube
-}
-
-func (f F) Create(context, appID, resType string) {
+func (f F) Create(context, action, appID, resType string) {
 	logging.Log([]string{"\n", vars.EmojiRemote, vars.EmojiProcess}, "Creating "+baseCI.F.GetResType(baseCI.F{}, context)+"..", 0)
-	if context == "develop/remote" { // TODO: Refactor
-		context = "remote"
-	}
 	var namespace string
 	var imageAddrs string
-	var contextID string
 	var remoteURL string
 	var waitForStatusInLog string
 	var initWaitDuration int
-	if appID != "" {
-		namespace, imageAddrs, contextID, remoteURL, waitForStatusInLog, initWaitDuration = f.createNeuraKubeManaged(context)
-	} else {
-		namespace, contextID, imageAddrs = f.createSelfManaged(context)
+	f.checkProjectConfig()
+	if appIDTools.F.IsKindManaged(appIDTools.F{}, appID) {
+		namespace, imageAddrs, remoteURL, waitForStatusInLog, initWaitDuration = f.neuraKubeManaged(context, action)
+	} else if appIDTools.F.IsKindCustom(appIDTools.F{}, appID) {
+		namespace, imageAddrs = f.createSelfManaged(appID)
 	}
-	if context == "remote" {
-		f.developApp(context, remoteURL, namespace, imageAddrs)
+	remoteURL = f.checkContainerNetwork(namespace, appID, action, remoteURL)
+	if context == "develop" {
+		f.developApp(context, appID, remoteURL, namespace, imageAddrs)
 	}
-	tensorboard.F.Info(tensorboard.F{}, remoteURL)
+	tensorboard.F.LogInfo(tensorboard.F{}, remoteURL)
 	logging.Log([]string{"", vars.EmojiRemote, vars.EmojiSuccess}, "Created "+resType+".\n", 0)
-	pods.F.Logs(pods.F{}, namespace, contextID, waitForStatusInLog, false, initWaitDuration)
+	pods.F.Logs(pods.F{}, namespace, appID, waitForStatusInLog, false, initWaitDuration)
 }
 
-func (f F) createSelfManaged(context string) (string, string, string) {
-	var namespace string = terminal.GetUserSelection("In which cluster namespace is your app deployed?", namespaces.F.Get(namespaces.F{}, false), false, false)
-	var contextID string = terminal.GetUserSelection("How is the app named (kubernetes deployment)?", deployments.F.GetList(deployments.F{}, namespace, false), false, false)
-	var containerID int = 0
-	if len(pods.F.GetContainers(pods.F{}, namespace, contextID)) > 1 {
-		containerName := terminal.GetUserSelection("To which pod container do you want to connect?", pods.F.GetContainerNamesList(pods.F{}, namespace, contextID), false, false)
-		containerID = pods.F.GetContainerIDByName(pods.F{}, namespace, contextID, containerName)
+func (f F) developApp(context, appID, remoteURL, namespace, imageAddrs string) {
+	f.connectIDE(context, remoteURL)
+	devspace.F.Sync(devspace.F{}, appID, namespace, imageAddrs, true)
+}
+
+func (f F) checkProjectConfig() {
+	infra.F.CheckClusterID(infra.F{})
+	f.checkContainerSync()
+}
+
+func (f F) checkContainerSync() {
+	if !config.ValidSettings("project", "containers/sync", true) {
+		var localAppRoot string = filesystem.GetWorkspaceFolderVar()
+		if config.DevConfigActive() {
+			localAppRoot = terminal.GetUserSelection("What is the local app root path?", []string{localAppRoot}, true, false)
+		}
+		config.Setting("set", "project", "Spec.Containers.Sync.PathMappings.LocalAppRoot", localAppRoot)
+		var localIDERoot string = localAppRoot
+		if config.DevConfigActive() {
+			localIDERoot = terminal.GetUserSelection("What is the local IDE root path?", []string{localIDERoot}, true, false)
+		}
+		config.Setting("set", "project", "Spec.Containers.Sync.PathMappings.LocalIDERoot", localIDERoot)
+		var containerAppRoot string
+		containerAppRoot = terminal.GetUserInput("What is the container root path of the app (e.g. /app/src)?")
+		config.Setting("set", "project", "Spec.Containers.Sync.PathMappings.ContainerAppRoot", containerAppRoot)
+		var containerAppDataRoot string = "data"
+		logging.Log([]string{"", vars.EmojiRocket, vars.EmojiWaiting}, "The container data root path is appended to the container root path which should direct to the persistent container data path.", 0)
+		containerAppDataRoot = terminal.GetUserSelection("What is the container data root path of the app (e.g. (/app/src/) --> data)?", []string{containerAppDataRoot}, true, false)
+		if !strings.HasSuffix(containerAppDataRoot, "/") {
+			containerAppDataRoot = containerAppDataRoot + "/"
+		}
+		config.Setting("set", "project", "Spec.Containers.Sync.PathMappings.ContainerAppDataRoot", containerAppDataRoot)
 	}
-	var imageAddrs string = pods.F.GetContainerImgAddrs(pods.F{}, namespace, contextID, containerID)
-	return namespace, contextID, imageAddrs
 }
 
-func (f F) createNeuraKubeManaged(context string) (string, string, string, string, string, int) {
+func (f F) connectIDE(context, remoteURL string) {
+	var envIDE string = config.Setting("get", "infrastructure", "Spec."+env.F.GetContext(env.F{}, context, true)+".Environment.IDE", "")
+	if envIDE == "vscode" {
+		vscode.F.CreateConfig(vscode.F{}, remoteURL, baseCI.F.GetContainerPortsForApps(baseCI.F{}, []string{"debugpy"})[0][0])
+	} else {
+		logging.Log([]string{"\n", vars.EmojiDev, vars.EmojiWarning}, vars.NeuraCLIName+" does not support automatic configuration of remote debugging for the IDE "+envIDE+".", 0)
+	}
+}
+
+func (f F) Recreate(context, action, appID string) {
+	f.Delete(context, baseCI.F.GetResType(baseCI.F{}, context))
+	f.Create(context, action, appID, baseCI.F.GetResType(baseCI.F{}, context))
+}
+
+func (f F) Delete(context, resType string) {
+	logging.Log([]string{"\n", vars.EmojiRemote, vars.EmojiProcess}, "Deleting "+resType+"..", 0)
+	var route string = context + "/delete"
+	var answer string = client.F.Router(client.F{}, vars.NeuraKubeNameID, "GET", route, "", "", "", nil)
+	if answer == "success" {
+		logging.Log([]string{"", vars.EmojiRemote, vars.EmojiSuccess}, "Deleted "+resType+".\n", 0)
+	} else {
+		var err error = errors.New("API route: " + route + "\nAnswer: " + answer)
+		errors.Check(err, runtime.F.GetCallerInfo(runtime.F{}, false), "Unable to delete "+resType+"!", false, true, true)
+	}
+}
+
+func (f F) createSelfManaged(appID string) (string, string) {
+	var namespace string = kubeTools.F.GetDeploymentNamespace(kubeTools.F{}, appID)
+	var containerID int = kubeTools.F.GetContainerID(kubeTools.F{}, namespace, appID)
+	var imageAddrs string = pods.F.GetContainerImgAddrs(pods.F{}, namespace, appID, containerID)
+	return namespace, imageAddrs
+}
+
+func (f F) neuraKubeManaged(context, action string) (string, string, string, string, int) {
+	if action != "sync" {
+		f.sendRequest(context, "prepare")
+		container.F.CheckUpdates(container.F{}, context, true, false) // Also build base image with: context+"-base"
+	}
 	var namespace string = baseCI.F.GetNamespace(baseCI.F{})
 	var imageAddrs string = container.F.GetImgAddrs(container.F{}, context, false, false)
-	var contextID string = ci.F.GetContextID(ci.F{}, context)
-	var remoteURL string = f.sentRequest(context, "create")
+	var remoteURL string
+	if action != "sync" {
+		remoteURL = f.sendRequest(context, "create")
+	}
 	var waitForStatusInLog string = f.getWaitForStatusInLog(context)
 	var initWaitDuration int = ci.F.GetInitWaitDuration(ci.F{}, context)
-	f.sentRequest(context, "prepare")
-	if context == "remote" { // TODO: Refactor
-		context = "develop/remote"
+	return namespace, imageAddrs, remoteURL, waitForStatusInLog, initWaitDuration
+}
+
+func (f F) checkContainerNetwork(namespace, appID, action, remoteURL string) string {
+	if projectConfig.F.NetworkMode(projectConfig.F{}, "port-forward") {
+		var podID string = pods.F.GetIDFromName(pods.F{}, namespace, appID)
+		var port int = strings.ToInt(debugpy.GetContainerPorts()[0])
+		go portforward.Connect(namespace, podID, port, port)
+		remoteURL = "localhost:"+strings.ToString(port)
+	} else if projectConfig.F.NetworkMode(projectConfig.F{}, "remote-url") {
+		if action == "sync" {
+			var validGcloudSettings bool = config.ValidSettings("infrastructure", vars.InfraProviderGcloud, true)
+			var appKindManaged bool = appIDTools.F.IsKindManaged(appIDTools.F{}, appID)
+			var requestLBIP bool = validGcloudSettings && appKindManaged
+			if requestLBIP {
+				remoteURL = services.F.GetLoadBalancerIP(services.F{}, namespace, appID)
+			}
+		}
+		if remoteURL == "" {
+			remoteURL = projectConfig.F.GetRemoteURL(projectConfig.F{}, appID)
+		}
 	}
-	container.F.CheckUpdates(container.F{}, context+"-base", true, false)
-	//portforward.Connect("neurakube", 1000, 80)
-	f.selfHostedInfra(context)
-	return namespace, imageAddrs, contextID, remoteURL, waitForStatusInLog, initWaitDuration
+	return remoteURL
 }
 
 func (f F) getWaitForStatusInLog(context string) string {
 	var waitForStatusInLog string
-	if context == "app" {
+	if context == "develop" {
 		waitForStatusInLog = "Epoch: 1"
 	} else if context == "inference" {
 		waitForStatusInLog = "Serving"
@@ -107,93 +184,32 @@ func (f F) getWaitForStatusInLog(context string) string {
 	return waitForStatusInLog
 }
 
-func (f F) developApp(context, remoteURL, namespace, imageAddrs string) {
-	f.connectIDE(context, remoteURL)
-	devspace.F.Sync(devspace.F{}, context, namespace, imageAddrs, true)
-}
-
-func (f F) sentRequest(context, signal string) string {
-	waitDuration := strings.ToString(ci.F.GetInitWaitDuration(ci.F{}, context))
+func (f F) sendRequest(context, signal string) string {
+	var waitDuration string = strings.ToString(ci.F.GetInitWaitDuration(ci.F{}, context))
 	if signal == "prepare" {
 		logging.Log([]string{"", vars.EmojiAPI, vars.EmojiWaiting}, "Requesting "+signal+" "+context+"..", 0)
 	} else if signal == "create" {
 		logging.Log([]string{"", vars.EmojiAPI, vars.EmojiWaiting}, "Sending request to "+vars.NeuraKubeName+" and waiting for the "+context+" environment to be ready (this may take up to "+waitDuration+" minutes for a new cluster)..", 0)
 	}
-	response := client.F.Router(client.F{}, vars.NeuraKubeNameRepo, "GET", context, "", "", "action="+signal, nil)
-	if !strings.Contains(response, "Error") {
+	var response string = client.F.Router(client.F{}, vars.NeuraKubeNameID, "GET", context, "", "", "action="+signal, nil)
+	var respSuccessKey string = "success/"
+	if response == "success" || strings.HasPrefix(response, respSuccessKey) {
+		response = strings.TrimPrefix(response, respSuccessKey)
 		logging.Log([]string{"", vars.EmojiAPI, vars.EmojiSuccess}, "Request "+signal+" "+context+" successful.\n", 0)
 	} else {
-		logging.Log([]string{"", vars.EmojiAPI, vars.EmojiWaiting}, "Response: "+response, 0)
-		errors.Check(nil, runtime.F.GetCallerInfo(runtime.F{}, false), "Received "+vars.NeuraKubeName+" error message for "+signal+" "+context+"!", true, true, true)
+		errors.Check(nil, runtime.F.GetCallerInfo(runtime.F{}, false), "Received error for "+signal+" "+context+": "+response, true, true, true)
 	}
 	return response
 }
 
-func (f F) Recreate(context, appID string) {
-	f.Delete(context, baseCI.F.GetResType(baseCI.F{}, context))
-	f.Create(context, appID, baseCI.F.GetResType(baseCI.F{}, context))
-}
-
-func (f F) Delete(context, resType string) {
-	logging.Log([]string{"\n", vars.EmojiRemote, vars.EmojiProcess}, "Deleting "+resType+"..", 0)
-	if context == "remote" { // TODO: Refactor
-		context = "develop/remote"
-	}
-	route := context + "/delete"
-	answer := client.F.Router(client.F{}, vars.NeuraKubeNameRepo, "GET", route, "", "", "", nil)
-	if answer == "success" {
-		logging.Log([]string{"", vars.EmojiRemote, vars.EmojiSuccess}, "Deleted "+resType+".\n", 0)
-	} else {
-		err := errors.New("API route: " + route + "\nAnswer: " + answer)
-		errors.Check(err, runtime.F.GetCallerInfo(runtime.F{}, false), "Unable to delete "+resType+"!", false, true, true)
-	}
-}
-
 func (f F) checkUserConfigs(context string) {
-	logging.Log([]string{"", vars.EmojiRemote, vars.EmojiSettings}, "Checking "+users.GetIDActive()+" user configs..\n", 0)
+	logging.Log([]string{"", vars.EmojiRemote, vars.EmojiSettings}, "Checking "+usersID.F.GetActive(usersID.F{})+" user configs..\n", 0)
 	if !config.ValidSettings("infrastructure", context, true) {
-		infraconfig.F.SetModuleSpec(infraconfig.F{}, context)
+		infraConfig.F.SetModuleSpec(infraConfig.F{}, context)
 	}
 	accType := baseCI.F.GetResources(baseCI.F{}, context)
 	if !config.ValidSettings("infrastructure", vars.InfraProviderGcloud+"/accelerator/"+accType, true) {
-		infraconfig.F.SetGcloudAccelerator(infraconfig.F{}, context, accType)
+		infraConfig.F.SetGcloudAccelerator(infraConfig.F{}, context, accType)
 	}
-	//f.checkDevconfig(context) TODO: Necessary?
-}
-
-func (f F) checkDevconfig(context string) {
-	if config.Setting("get", "dev", "Spec.API.Address", "") != "cluster" {
-		logging.Log([]string{"\n", vars.EmojiAPI, vars.EmojiWaiting}, "The "+context+" module is not available if you have activated the API localhost mode.", 0)
-		sel := terminal.GetUserSelection("Do you want to switch to API cluster mode?", []string{}, false, true)
-		if sel == "Yes" {
-			config.Setting("set", "dev", "Spec.API.Address", "cluster")
-		} else {
-			terminal.Exit(0, "")
-		}
-	}
-}
-
-func (f F) connectIDE(context, remoteURL string) {
-	if remoteURL == "" {
-		logging.Log([]string{"", vars.EmojiRocket, vars.EmojiWaiting}, "Please provide information about the routing to your remote app.", 0)
-		remoteURL = terminal.GetUserInput("What is the remote URL (or IP) on which the app is reachable via network?")
-	}
-	envIDE := config.Setting("get", "infrastructure", "Spec."+env.F.GetContext(env.F{}, context, true)+".Environment.IDE", "")
-	if envIDE == "vscode" {
-		vscode.F.CreateConfig(vscode.F{}, remoteURL, baseCI.F.GetContainerPortsForApps(baseCI.F{}, []string{"debugpy"})[0][0])
-	} else {
-		logging.Log([]string{"\n", vars.EmojiAPI, vars.EmojiWaiting}, "To get terminal live logs from your "+context+" environment execute:\nneuracli cluster logs "+baseCI.F.GetNamespace(baseCI.F{})+"\nin another terminal.", 0)
-	}
-}
-
-func (f F) selfHostedInfra(context string) {
-	if vars.InfraProviderActive == vars.InfraProviderSelfHosted {
-		logging.Log([]string{"", vars.EmojiKubernetes, vars.EmojiInfo}, "To spin up your "+context+" development environment you have to connect a GPU enabled kubernetes node to your cluster.", 0)
-		logging.Log([]string{"", vars.EmojiKubernetes, vars.EmojiInfo}, "All necessary GPU drivers will be installed automatically by "+vars.OrganizationName+".", 0)
-		sel := terminal.GetUserSelection("Do you have already connected a GPU node?", []string{}, false, true)
-		if sel != "Yes" {
-			logging.Log([]string{"", vars.EmojiKubernetes, vars.EmojiInfo}, "Okay, so then please connect one and come back later.", 0)
-			terminal.Exit(0, "")
-		}
-	}
+	devConfig.F.RequireAPIAddrsNonLocal(devConfig.F{}, context)
 }

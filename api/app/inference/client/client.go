@@ -3,13 +3,13 @@ package client
 import (
 	"fmt"
 
-	"../../../../../tools-go/api/client"
-	"../../../../../tools-go/env"
-	"../../../../../tools-go/errors"
-	"../../../../../tools-go/logging"
-	"../../../../../tools-go/runtime"
-	"../../../../../tools-go/terminal"
-	"../../../../../tools-go/vars"
+	"github.com/neurafuse/tools-go/api/client"
+	"github.com/neurafuse/tools-go/env"
+	"github.com/neurafuse/tools-go/errors"
+	"github.com/neurafuse/tools-go/logging"
+	"github.com/neurafuse/tools-go/runtime"
+	"github.com/neurafuse/tools-go/terminal"
+	"github.com/neurafuse/tools-go/vars"
 )
 
 type F struct{}
